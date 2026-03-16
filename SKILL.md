@@ -1,6 +1,6 @@
 ---
 name: openclaw-skill-auditor
-description: Audit installed OpenClaw skills for security risks, token bloat, and hidden cost patterns. Use this skill whenever the user asks to scan, audit, check, or review their installed skills — including questions like "are my skills safe?", "which skills are wasting tokens?", "do I have any suspicious skills?", "clean up my skills", or "check my OpenClaw skills". Always invoke this skill for any skill health, quality, or cost investigation.
+description: 扫描并审计所有已安装的 OpenClaw 技能，检测安全风险、token 消耗和隐性成本。当用户说以下任意内容时触发：扫描技能、审计技能、检查技能、技能安全、技能有没有问题、技能质量、技能清理、哪些技能有风险、技能消耗太多token、技能有恶意代码、有没有危险的技能、技能后台任务、技能定时任务、检查我的skill、扫描我的skill、skill安全、skill审计、skill有问题、清理skill、skill质量检测、skill太占token、有没有可疑的skill。Always invoke this skill for any skill health, security, quality, token cost, or background task investigation.
 ---
 
 # OpenClaw Skill Auditor
@@ -25,44 +25,43 @@ Skills with the same name across paths are deduplicated (first occurrence wins).
 
 ```bash
 python3 ~/.openclaw/skills/openclaw-skill-auditor/scripts/scan.py \
-  --out /tmp/openclaw-audit.json
+  --out ./oca_audit.json
 ```
 
 Additional path: append `--extra-root /path/to/skills`.
 
 ### Step 2: Read and render
 
-Read `/tmp/openclaw-audit.json` and print the report exactly as specified below. Do not add commentary, do not filter flags, do not explain away findings.
+Read `./oca_audit.json` and print the report exactly as specified below. Do not add commentary, do not filter flags, do not explain away findings.
 
 ### Step 3: Terminal report format
 
 Header:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Skill Auditor 扫描报告
+════════════════════════════════════════
+技能安全审计报告
 扫描时间：<scanned_at>
 共扫描 <skill_count> 个技能 — <flagged_count> 个有命中，<clean_count> 个正常
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+════════════════════════════════════════
 ```
 
-每个有命中的技能，按此格式输出。同一条规则在不同文件重复命中的，合并为一条、count 累加：
+每个有命中的技能，按此格式输出。同一条规则在不同文件重复命中的，合并为一条、count 累加。不输出文件名和行号。序号用 emoji 数字（1️⃣2️⃣3️⃣...），维度标题前缀 `--`，条目前缀 `----`，无空格缩进：
 
 ```
-【N】<skill-name>
+1️⃣<skill-name>
+--🔴 安全问题
+----[严重] <detail>（共 <count> 处）
+----[高] <detail>（共 <count> 处）
+--🟡 Token 消耗
+----[中] <detail>（共 <count> 处）
+--🟠 隐性消耗
+----[高] <detail>（共 <count> 处）
 
-  🔴 安全问题
-    · [严重] <detail>（共 <count> 处）
-    · [高]   <detail>（共 <count> 处）
-
-  🟡 Token 消耗
-    · [中]   <detail>（共 <count> 处）
-
-  🟠 隐性消耗
-    · [高]   <detail>（共 <count> 处）
+2️⃣<skill-name>
+--🔴 安全问题
+----[高] <detail>（共 <count> 处）
 ```
-
-不输出文件名和行号。级别、说明、次数即可。
 
 级别：`critical`→严重 / `high`→高 / `medium`→中 / `low`→低
 维度：`security`→🔴 安全问题 / `token_bloat`→🟡 Token 消耗 / `hidden_cost`→🟠 隐性消耗
@@ -71,7 +70,7 @@ Skill Auditor 扫描报告
 
 ```
 ✅ 以下技能无命中（<clean_count> 个）：
-   skill-a、skill-b ...
+skill-a、skill-b、skill-c ...
 ```
 
 ### Step 4: 处置建议（必须执行，不可跳过）
@@ -108,25 +107,21 @@ Skill Auditor 扫描报告
 | `hid-self-reinstall` / `hid-heartbeat-abuse` | `帮你核查 <skill> 是否会自动触发重复执行？` |
 | 多条 hid-* 同时命中 | `帮你核查 <skill> 的后台持续行为（列出类型），确认是否受控？` |
 
-输出格式，按技能分组：
+输出格式，按技能分组，条目前缀 `--`，无空格缩进：
 
 ```
 ────────────────────────────────────────
 处置建议
 ────────────────────────────────────────
-
-【feishu-chat-reader】
-  [A] 帮你逐行核查 feishu-chat-reader 的安全问题（网络请求/凭证读取），确认风险范围？
-  [B] 帮你核查 feishu-chat-reader 的循环逻辑，确认是否会持续占用资源？
-
-【feishu-permission-setup】
-  [C] 帮你逐行核查 feishu-permission-setup 的安全问题（代码执行/凭证读取），确认风险范围？
-
-【us-stock-analysis】
-  [D] 帮你检查 us-stock-analysis 的网络请求目标地址，确认是否只访问合法域名？
-
-【weather】
-  [E] 帮你检查 weather 的网络请求目标地址，确认是否只访问合法域名？
+1️⃣feishu-chat-reader
+--[A] 帮你逐行核查 feishu-chat-reader 的安全问题（网络请求/凭证读取），确认风险范围？
+--[B] 帮你核查 feishu-chat-reader 的循环逻辑，确认是否会持续占用资源？
+2️⃣feishu-permission-setup
+--[C] 帮你逐行核查 feishu-permission-setup 的安全问题（代码执行/凭证读取），确认风险范围？
+3️⃣us-stock-analysis
+--[D] 帮你检查 us-stock-analysis 的网络请求目标地址，确认是否只访问合法域名？
+4️⃣weather
+--[E] 帮你检查 weather 的网络请求目标地址，确认是否只访问合法域名？
 
 输入字母执行（如：A C），或回车跳过：
 ```
@@ -138,10 +133,9 @@ Skill Auditor 扫描报告
 ```
 ────────────────────────────────────────
 以上 <N> 个技能有命中项：
-  【1】feishu-permission-setup
-  【2】feishu-chat-reader
-  ...
-
+--1️⃣feishu-permission-setup
+--2️⃣feishu-chat-reader
+--...
 需要删除哪些？输入编号（如：1 3），或回车跳过：
 ```
 
