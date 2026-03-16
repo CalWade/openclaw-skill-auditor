@@ -16,6 +16,25 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 
+# ---------------------------------------------------------------------------
+# Safety limits (keep execution fast inside sandboxed environments)
+# ---------------------------------------------------------------------------
+
+MAX_FILE_BYTES = 256 * 1024       # skip files larger than 256 KB
+MAX_FILES_PER_SKILL = 60          # stop traversing after this many files per skill
+MAX_SCAN_DEPTH = 3                # don't recurse deeper than 3 levels inside a skill dir
+MAX_LINES_READ = 2000             # only scan the first 2000 lines of any file
+
+# Directories that are never worth scanning
+SKIP_DIRS = {
+    "node_modules", ".git", "__pycache__", ".venv", "venv",
+    "dist", "build", "coverage", ".cache", "eval-viewer",
+    ".next", ".nuxt", "vendor",
+}
+
+# ---------------------------------------------------------------------------
+# Data model
+# ---------------------------------------------------------------------------
 
 @dataclass
 class Flag:
@@ -26,6 +45,9 @@ class Flag:
     file: str        # relative path within skill dir
     line: int = 0    # 0 = file-level
 
+# ---------------------------------------------------------------------------
+# Rules
+# ---------------------------------------------------------------------------
 
 CONTENT_RULES = [
     # Security
@@ -130,7 +152,7 @@ CONTENT_RULES = [
 SKIP_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico",
     ".woff", ".woff2", ".ttf", ".eot",
-    ".zip", ".gz", ".tar", ".bin", ".pyc",
+    ".zip", ".gz", ".tar", ".bin", ".pyc", ".map", ".lock", ".svg",
 }
 
 TEXT_EXTENSIONS = {
@@ -141,25 +163,72 @@ TEXT_EXTENSIONS = {
 DUPLICATE_WINDOW = 5
 DUPLICATE_THRESHOLD = 3
 
+# ---------------------------------------------------------------------------
+# Bounded file iterator
+# ---------------------------------------------------------------------------
+
+def iter_skill_files(skill_path: Path):
+    """
+    Yield text files inside skill_path up to MAX_FILES_PER_SKILL,
+    respecting MAX_SCAN_DEPTH and SKIP_DIRS, skipping oversized files.
+    """
+    count = 0
+
+    def _walk(directory: Path, depth: int):
+        nonlocal count
+        if depth > MAX_SCAN_DEPTH or count >= MAX_FILES_PER_SKILL:
+            return
+        try:
+            entries = sorted(directory.iterdir())
+        except PermissionError:
+            return
+        for entry in entries:
+            if count >= MAX_FILES_PER_SKILL:
+                return
+            if entry.is_dir():
+                if entry.name in SKIP_DIRS or entry.name.startswith("."):
+                    continue
+                _walk(entry, depth + 1)
+            elif entry.is_file():
+                if entry.suffix.lower() in SKIP_EXTENSIONS:
+                    continue
+                if entry.suffix.lower() not in TEXT_EXTENSIONS and entry.suffix != "":
+                    continue
+                try:
+                    if entry.stat().st_size > MAX_FILE_BYTES:
+                        continue
+                except OSError:
+                    continue
+                count += 1
+                yield entry
+
+    yield from _walk(skill_path, 0)
+
+
+def read_limited(fpath: Path) -> list:
+    """Read up to MAX_LINES_READ lines from a file."""
+    try:
+        text = fpath.read_text(errors="replace")
+    except OSError:
+        return []
+    return text.splitlines()[:MAX_LINES_READ]
+
+# ---------------------------------------------------------------------------
+# Checkers
+# ---------------------------------------------------------------------------
 
 def scan_content(skill_path: Path) -> list:
     flags = []
     seen = set()
-    for fpath in skill_path.rglob("*"):
-        if not fpath.is_file():
-            continue
-        if fpath.suffix.lower() in SKIP_EXTENSIONS:
-            continue
-        if fpath.suffix.lower() not in TEXT_EXTENSIONS and fpath.suffix != "":
-            continue
+
+    for fpath in iter_skill_files(skill_path):
         if "openclaw-skill-auditor" in str(fpath):
             continue
+
         rel = str(fpath.relative_to(skill_path))
-        try:
-            text = fpath.read_text(errors="replace")
-        except OSError:
-            continue
-        for lineno, line in enumerate(text.splitlines(), 1):
+        lines = read_limited(fpath)
+
+        for lineno, line in enumerate(lines, 1):
             for rule_id, dimension, severity, pattern, detail in CONTENT_RULES:
                 key = f"{rule_id}:{rel}"
                 if key in seen:
@@ -167,6 +236,7 @@ def scan_content(skill_path: Path) -> list:
                 if pattern.search(line):
                     flags.append(Flag(dimension, severity, rule_id, detail, rel, line=lineno))
                     seen.add(key)
+
     return flags
 
 
@@ -174,7 +244,10 @@ def check_skill_size(skill_path: Path):
     md = skill_path / "SKILL.md"
     if not md.exists():
         return None
-    n = len(md.read_text(errors="replace").splitlines())
+    try:
+        n = len(md.read_text(errors="replace").splitlines())
+    except OSError:
+        return None
     if n > 500:
         return Flag(
             "token_bloat", "medium", "tok-skill-size",
@@ -189,15 +262,25 @@ def check_ref_size(skill_path: Path) -> list:
     refs = skill_path / "references"
     if not refs.exists():
         return flags
-    for f in refs.rglob("*"):
-        if f.is_file() and f.suffix in (".md", ".txt", ".rst"):
+    try:
+        entries = list(refs.iterdir())
+    except PermissionError:
+        return flags
+    for f in entries:
+        if not f.is_file() or f.suffix not in (".md", ".txt", ".rst"):
+            continue
+        try:
+            if f.stat().st_size > MAX_FILE_BYTES:
+                continue
             n = len(f.read_text(errors="replace").splitlines())
-            if n > 300:
-                flags.append(Flag(
-                    "token_bloat", "low", "tok-ref-size",
-                    f"references 文件共 {n} 行（超过 300 行），建议拆分或精简。",
-                    str(f.relative_to(skill_path)),
-                ))
+        except OSError:
+            continue
+        if n > 300:
+            flags.append(Flag(
+                "token_bloat", "low", "tok-ref-size",
+                f"references 文件共 {n} 行（超过 300 行），建议拆分或精简。",
+                str(f.relative_to(skill_path)),
+            ))
     return flags
 
 
@@ -205,7 +288,7 @@ def check_duplicate_blocks(skill_path: Path):
     md = skill_path / "SKILL.md"
     if not md.exists():
         return None
-    lines = md.read_text(errors="replace").splitlines()
+    lines = read_limited(md)
     counts = Counter()
     for i in range(len(lines) - DUPLICATE_WINDOW + 1):
         block = "\n".join(lines[i:i + DUPLICATE_WINDOW]).strip()
@@ -224,34 +307,45 @@ def check_duplicate_blocks(skill_path: Path):
 def check_mcp_tools(skill_path: Path):
     for fname in ("mcp.json", "tools.json", "mcp_tools.json"):
         fpath = skill_path / fname
-        if fpath.exists():
-            try:
-                data = json.loads(fpath.read_text())
-                tools = data.get("tools", [])
-                if len(tools) > 10:
-                    return Flag(
-                        "hidden_cost", "medium", "hid-tool-spam",
-                        f"{fname} 注册了 {len(tools)} 个工具（超过 10 个），会使每次 tool-call 的上下文膨胀。",
-                        fname,
-                    )
-            except (json.JSONDecodeError, KeyError):
-                pass
+        if not fpath.exists():
+            continue
+        try:
+            if fpath.stat().st_size > MAX_FILE_BYTES:
+                continue
+            data = json.loads(fpath.read_text())
+            tools = data.get("tools", [])
+            if len(tools) > 10:
+                return Flag(
+                    "hidden_cost", "medium", "hid-tool-spam",
+                    f"{fname} 注册了 {len(tools)} 个工具（超过 10 个），会使每次 tool-call 的上下文膨胀。",
+                    fname,
+                )
+        except (OSError, json.JSONDecodeError, KeyError):
+            pass
     return None
 
+# ---------------------------------------------------------------------------
+# Per-skill audit
+# ---------------------------------------------------------------------------
 
 def audit_skill(skill_path: Path) -> dict:
     flags = []
     flags.extend(scan_content(skill_path))
+
     f = check_skill_size(skill_path)
     if f:
         flags.append(f)
+
     flags.extend(check_ref_size(skill_path))
+
     f = check_duplicate_blocks(skill_path)
     if f:
         flags.append(f)
+
     f = check_mcp_tools(skill_path)
     if f:
         flags.append(f)
+
     return {
         "skill": skill_path.name,
         "path": str(skill_path),
@@ -259,10 +353,14 @@ def audit_skill(skill_path: Path) -> dict:
         "flags": [asdict(f) for f in flags],
     }
 
+# ---------------------------------------------------------------------------
+# Path resolution
+# ---------------------------------------------------------------------------
 
 def resolve_skill_roots(extra=None) -> list:
     home = Path.home()
     candidates = []
+
     workspace = home / ".openclaw" / "workspace"
     config_file = home / ".openclaw" / "openclaw.json"
     if config_file.exists():
@@ -276,9 +374,11 @@ def resolve_skill_roots(extra=None) -> list:
     candidates.append(workspace / "skills")
     candidates.append(home / ".openclaw" / "skills")
     candidates.append(home / ".agents" / "skills")
+
     if extra:
         for p in extra:
             candidates.append(Path(p).expanduser())
+
     seen = set()
     roots = []
     for p in candidates:
@@ -289,18 +389,27 @@ def resolve_skill_roots(extra=None) -> list:
         if resolved not in seen and p.exists():
             seen.add(resolved)
             roots.append(p)
+
     return roots
 
+# ---------------------------------------------------------------------------
+# Run
+# ---------------------------------------------------------------------------
 
 def run(roots, out: Path) -> int:
     if not roots:
         print("ERROR: 未找到任何 skill 目录。", file=sys.stderr)
         print("已查找: ~/.openclaw/workspace/skills, ~/.openclaw/skills, ~/.agents/skills", file=sys.stderr)
         return 1
+
     seen_names = set()
     skill_dirs = []
     for root in roots:
-        for d in sorted(root.iterdir(), key=lambda x: x.name):
+        try:
+            entries = sorted(root.iterdir(), key=lambda x: x.name)
+        except PermissionError:
+            continue
+        for d in entries:
             if not d.is_dir() or d.name.startswith("."):
                 continue
             if d.name == "openclaw-skill-auditor":
@@ -308,16 +417,20 @@ def run(roots, out: Path) -> int:
             if d.name not in seen_names:
                 seen_names.add(d.name)
                 skill_dirs.append((d, str(root)))
+
     print(f"扫描 {len(skill_dirs)} 个 skill，覆盖 {len(roots)} 个路径：")
     for root in roots:
         print(f"  {root}")
+
     results = []
     for skill_dir, source in skill_dirs:
         result = audit_skill(skill_dir)
         result["source_root"] = source
         results.append(result)
+
     flagged = [r for r in results if r["has_risk"]]
     clean = [r for r in results if not r["has_risk"]]
+
     report = {
         "scanned_at": datetime.now().isoformat(timespec="seconds"),
         "roots": [str(r) for r in roots],
@@ -327,11 +440,15 @@ def run(roots, out: Path) -> int:
         "flagged": flagged,
         "clean": [r["skill"] for r in clean],
     }
+
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, ensure_ascii=False))
     print(f"完成。{len(flagged)} 个 skill 有风险项，{len(clean)} 个无风险。报告: {out}")
     return 0
 
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="OpenClaw Skill Auditor")
