@@ -49,53 +49,51 @@ Skill Auditor 扫描报告
 每个有命中的 skill，按此格式输出：
 
 ```
-[N] <skill-name>  (<source_root>)
+【N】<skill-name>  (<source_root>)
 
-  🔴 安全风险        ← 仅当有 security flags 时显示
-    [SEVERITY] <rule> — <file>:<line> — <detail>（<count>处）
+  🔴 安全问题
+    · [严重] <rule> — <file> 第 <line> 行，共 <count> 处
+      <detail>
 
-  🟡 Token 消耗      ← 仅当有 token_bloat flags 时显示
-    [SEVERITY] <rule> — <file>:<line> — <detail>（<count>处）
+  🟡 Token 消耗
+    · [中] <rule> — <file> 第 <line> 行，共 <count> 处
+      <detail>
 
-  🟠 隐性成本        ← 仅当有 hidden_cost flags 时显示
-    [SEVERITY] <rule> — <file>:<line> — <detail>（<count>处）
+  🟠 隐性消耗
+    · [高] <rule> — <file> 第 <line> 行，共 <count> 处
+      <detail>
 ```
 
-Severity 标签：`[CRITICAL]` `[HIGH]` `[MEDIUM]` `[LOW]`
+级别对应：`critical`→严重 / `high`→高 / `medium`→中 / `low`→低
+维度对应：`security`→🔴 安全问题 / `token_bloat`→🟡 Token 消耗 / `hidden_cost`→🟠 隐性消耗
 
 正常 skill：
 
 ```
-✅ 无命中（<clean_count> 个）：<skill1>, <skill2>, ...
+✅ 以下技能无命中（<clean_count> 个）：
+   skill-a、skill-b、skill-c ...
 ```
 
 ### Step 4: 让主人决定
 
-列出所有有命中项的 skill 编号，直接问主人：
-
 ```
-以上 <N> 个 skill 有命中项。
-
-请问需要删除哪些？输入编号（如 1 3），或回车跳过：
+以上 <N> 个技能有命中项，需要删除哪些？
+请输入编号（如：1 3），或直接回车跳过：
 ```
 
-**不要在问题前加任何分析、建议或判断。** 直接列编号，直接问。
+不要在问题前加任何分析或建议文字。
 
 ### Step 5: 安全删除
 
-对主人选中的每个 skill，根据 `source_root` 确定路径，执行：
+根据选中编号的 `source_root` + skill 名拼出完整路径，执行：
 
 ```bash
 trash <skill-path>
 ```
 
-若 `trash` 不可用：
+若 `trash` 不可用：`mv <skill-path> ~/.Trash/`
 
-```bash
-mv <skill-path> ~/.Trash/
-```
-
-**禁止使用 `rm -rf`。** 每删一个输出确认，删完后提示可重新扫描。
+**禁止 `rm -rf`。** 每删一个输出确认，删完后提示可重新扫描。
 
 ---
 
@@ -123,7 +121,7 @@ mv <skill-path> ~/.Trash/
 | tok-ref-size | references/ 单文件超过 300 行 |
 | tok-wide-trigger | 触发词过于宽泛 |
 
-### 隐性成本（`hid-*`）
+### 隐性消耗（`hid-*`）
 
 | 规则 | 检测内容 |
 |------|---------|
@@ -132,6 +130,11 @@ mv <skill-path> ~/.Trash/
 | hid-self-reinstall | `npx skills add` 自我复制 |
 | hid-always-load | 要求每次会话预加载 |
 | hid-tool-spam | 注册超过 10 个 MCP 工具 |
+| hid-bg-process | nohup/pm2/forever/daemon 后台持久进程 |
+| hid-infinite-loop | `while True` / `while(true)` 无限循环 |
+| hid-set-interval | `setInterval` 或递归 `setTimeout` |
+| hid-websocket | WebSocket 长连接 |
+| hid-sleep-loop | sleep 调用（常与循环结合实现轮询）|
 
 ---
 
