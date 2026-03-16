@@ -1,0 +1,23 @@
+{
+  "skill_name": "openclaw-skill-auditor",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我扫描一下我装的所有 OpenClaw skill，看看有没有危险的",
+      "expected_output": "运行 scan.py，输出终端报告，列出所有有风险的 skill，对每个 flag 给出详细说明，并提供删除菜单",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "我的 skill 有没有会偷偷消耗 token 的？帮我查一下",
+      "expected_output": "运行扫描，重点展示 token_bloat 和 hidden_cost 维度的结果，列出问题 skill 和具体规则命中情况",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "检查我安装的技能里有没有恶意代码，如果有帮我删掉",
+      "expected_output": "扫描 security 维度，对 CRITICAL/HIGH 风险 skill 给出详细 flag 说明，弹出删除菜单，等待用户确认后用 trash 删除选中项",
+      "files": []
+    }
+  ]
+}
