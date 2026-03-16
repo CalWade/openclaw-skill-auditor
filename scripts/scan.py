@@ -59,6 +59,7 @@ class Flag:
 
 
 CONTENT_RULES = [
+    # Security
     (
         "sec-eval", "security", "critical",
         re.compile(r"\beval\s*\(", re.IGNORECASE),
@@ -69,7 +70,7 @@ CONTENT_RULES = [
         re.compile(
             r"child_process|subprocess\s*\.\s*(run|call|Popen|check_output)"
             r"|os\s*\.\s*system\s*\("
-            r"|\bexec\s*\(\s*['\"`]",
+            r"|\bexec\s*\(\s*['\"` ]",
             re.IGNORECASE,
         ),
         "调用 shell 执行（exec/subprocess/child_process），存在代码注入风险。",
@@ -102,8 +103,8 @@ CONTENT_RULES = [
     (
         "sec-dynamic-import", "security", "medium",
         re.compile(
-            r"await\s+import\s*\(\s*(?!['\"`])"
-            r"|require\s*\(\s*(?!['\"`])",
+            r"await\s+import\s*\(\s*(?!['\"` ])"
+            r"|require\s*\(\s*(?!['\"` ])",
             re.IGNORECASE,
         ),
         "动态 import 路径由运行时变量决定，可能加载任意模块。",
@@ -118,6 +119,7 @@ CONTENT_RULES = [
         ),
         "SKILL.md 中检测到不可见字符、同形字或越狱指令，疑似 Prompt 注入攻击。",
     ),
+    # Token Bloat
     (
         "tok-agents-embed", "token_bloat", "medium",
         re.compile(r"\b(AGENTS\.md|CLAUDE\.md|MEMORY\.md)\b", re.IGNORECASE),
@@ -131,6 +133,7 @@ CONTENT_RULES = [
         ),
         "触发词过于宽泛，可能导致 skill 被不必要地频繁激活。",
     ),
+    # Hidden Cost
     (
         "hid-heartbeat-abuse", "hidden_cost", "high",
         re.compile(
@@ -163,6 +166,59 @@ CONTENT_RULES = [
         ),
         "skill 要求每次会话都预加载，会增加每轮对话的固定 token 开销。",
     ),
+    (
+        "hid-bg-process", "hidden_cost", "high",
+        re.compile(
+            r"nohup\s"
+            r"|(\bpython\b|\bnode\b|\bbun\b).{0,60}\s&\s*$"
+            r"|\bPopen\s*\(.{0,80}daemon\s*=\s*True"
+            r"|\bpm2\s+start\b"
+            r"|\bforever\s+start\b"
+            r"|\bsupervisord\b|\bsupervisorctl\b",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+        "启动后台持久进程（nohup/pm2/forever/daemon），会在 agent 会话结束后继续运行。",
+    ),
+    (
+        "hid-infinite-loop", "hidden_cost", "high",
+        re.compile(
+            r"while\s+True\s*:"
+            r"|while\s*\(\s*true\s*\)"
+            r"|for\s*\(\s*;\s*;\s*\)"
+            r"|\bwhile\s+true\s*;?\s*do\b",
+            re.IGNORECASE,
+        ),
+        "包含无限循环，可能持续占用资源或轮询执行。",
+    ),
+    (
+        "hid-set-interval", "hidden_cost", "medium",
+        re.compile(
+            r"\bsetInterval\s*\("
+            r"|\bsetTimeout\s*\(.{0,120}\bsetTimeout\b",
+            re.IGNORECASE,
+        ),
+        "使用 setInterval 或递归 setTimeout 实现持续定时执行。",
+    ),
+    (
+        "hid-websocket", "hidden_cost", "medium",
+        re.compile(
+            r"\bnew\s+WebSocket\s*\("
+            r"|\bwebsockets\b"
+            r"|\bws://|wss://",
+            re.IGNORECASE,
+        ),
+        "建立 WebSocket 长连接，会持续保持与远端的连接。",
+    ),
+    (
+        "hid-sleep-loop", "hidden_cost", "low",
+        re.compile(
+            r"\btime\.sleep\s*\(\s*\d"
+            r"|\basyncio\.sleep\s*\(\s*\d"
+            r"|\bsleep\s+\d+",
+            re.IGNORECASE,
+        ),
+        "包含 sleep 调用，常与循环结合实现隐式轮询，需结合上下文确认。",
+    ),
 ]
 
 DUPLICATE_WINDOW    = 5
@@ -172,10 +228,8 @@ DUPLICATE_THRESHOLD = 3
 def _is_text(path: Path) -> bool:
     return path.suffix.lower() in TEXT_EXTENSIONS or path.suffix == ""
 
-
 def _skip(path: Path) -> bool:
     return path.suffix.lower() in SKIP_EXTENSIONS
-
 
 def collect_tier1(skill_path: Path) -> list:
     files = []
@@ -206,10 +260,8 @@ def collect_tier1(skill_path: Path) -> list:
             result.append(f)
     return result
 
-
 def collect_tier2(skill_path: Path, already_scanned: set) -> list:
     candidates = []
-
     def _walk(directory: Path, depth: int):
         if depth > MAX_SCAN_DEPTH:
             return
@@ -234,18 +286,11 @@ def collect_tier2(skill_path: Path, already_scanned: set) -> list:
                 if size > TIER2_MAX_BYTES:
                     continue
                 candidates.append((depth, size, entry))
-
     _walk(skill_path, 1)
     candidates.sort(key=lambda x: (x[0], x[1]))
     return [f for _, _, f in candidates[:TIER2_FILE_BUDGET]]
 
-
 def strip_markdown_fences(lines: list) -> list:
-    """
-    Replace lines inside ``` fences with empty strings.
-    Prevents doc examples from triggering rules.
-    Line numbers are preserved so positions remain accurate.
-    """
     result = []
     in_fence = False
     for line in lines:
@@ -257,7 +302,6 @@ def strip_markdown_fences(lines: list) -> list:
         else:
             result.append(line)
     return result
-
 
 def scan_file(fpath: Path, skill_path: Path) -> list:
     try:
@@ -280,7 +324,6 @@ def scan_file(fpath: Path, skill_path: Path) -> list:
         for rule_id, (first_line, count, dimension, severity, detail) in hits.items()
     ]
 
-
 def check_skill_size(skill_path: Path):
     md = skill_path / "SKILL.md"
     if not md.exists():
@@ -293,7 +336,6 @@ def check_skill_size(skill_path: Path):
         return Flag("token_bloat", "medium", "tok-skill-size",
             f"SKILL.md 共 {n} 行（超过 500 行），建议将内容移至 references/ 目录。", "SKILL.md")
     return None
-
 
 def check_ref_size(skill_path: Path) -> list:
     flags = []
@@ -319,7 +361,6 @@ def check_ref_size(skill_path: Path) -> list:
                 str(f.relative_to(skill_path))))
     return flags
 
-
 def check_duplicate_blocks(skill_path: Path):
     md = skill_path / "SKILL.md"
     if not md.exists():
@@ -340,7 +381,6 @@ def check_duplicate_blocks(skill_path: Path):
             "SKILL.md")
     return None
 
-
 def check_mcp_tools(skill_path: Path):
     for fname in ("mcp.json", "tools.json", "mcp_tools.json"):
         fpath = skill_path / fname
@@ -359,7 +399,6 @@ def check_mcp_tools(skill_path: Path):
             pass
     return None
 
-
 def audit_skill(skill_path: Path) -> dict:
     flags = []
     tier1_files = collect_tier1(skill_path)
@@ -370,15 +409,12 @@ def audit_skill(skill_path: Path) -> dict:
     for fpath in tier2_files:
         flags.extend(scan_file(fpath, skill_path))
     f = check_skill_size(skill_path)
-    if f:
-        flags.append(f)
+    if f: flags.append(f)
     flags.extend(check_ref_size(skill_path))
     f = check_duplicate_blocks(skill_path)
-    if f:
-        flags.append(f)
+    if f: flags.append(f)
     f = check_mcp_tools(skill_path)
-    if f:
-        flags.append(f)
+    if f: flags.append(f)
     return {
         "skill": skill_path.name,
         "path": str(skill_path),
@@ -388,7 +424,6 @@ def audit_skill(skill_path: Path) -> dict:
         "tier2_files": len(tier2_files),
         "flags": [asdict(f) for f in flags],
     }
-
 
 def resolve_skill_roots(extra=None) -> list:
     home = Path.home()
@@ -420,7 +455,6 @@ def resolve_skill_roots(extra=None) -> list:
             seen.add(resolved)
             roots.append(p)
     return roots
-
 
 def run(roots, out: Path) -> int:
     if not roots:
@@ -464,9 +498,8 @@ def run(roots, out: Path) -> int:
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, ensure_ascii=False))
-    print(f"完成。{len(flagged)} 个 skill 有命中项，{len(clean)} 个无命中。报告: {out}")
+    print(f"完成。{len(flagged)} 个 skill 有风险项，{len(clean)} 个无风险。报告: {out}")
     return 0
-
 
 def main():
     parser = argparse.ArgumentParser(description="OpenClaw Skill Auditor")
@@ -477,7 +510,6 @@ def main():
     args = parser.parse_args()
     roots = resolve_skill_roots(args.extra_root)
     sys.exit(run(roots, Path(args.out).expanduser()))
-
 
 if __name__ == "__main__":
     main()
