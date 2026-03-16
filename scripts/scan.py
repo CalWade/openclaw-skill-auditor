@@ -3,6 +3,11 @@
 OpenClaw Skill Auditor - Static scanner
 Scans installed OpenClaw skills for security, token bloat, and hidden cost risks.
 
+Priority-based scanning:
+  Tier 1 — always fully scanned: SKILL.md, scripts/, every file <= 64 KB in the skill root
+  Tier 2 — scanned until budget exhausted: remaining subdirs, depth <= 6, files <= 256 KB
+  Skipped always: SKIP_DIRS, binary extensions, files > 256 KB
+
 Usage:
     python3 scan.py [--out /tmp/openclaw-audit.json] [--extra-root /path/to/skills]
 """
@@ -17,19 +22,32 @@ from datetime import datetime
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Safety limits (keep execution fast inside sandboxed environments)
+# Limits
 # ---------------------------------------------------------------------------
 
-MAX_FILE_BYTES = 256 * 1024       # skip files larger than 256 KB
-MAX_FILES_PER_SKILL = 60          # stop traversing after this many files per skill
-MAX_SCAN_DEPTH = 3                # don't recurse deeper than 3 levels inside a skill dir
-MAX_LINES_READ = 2000             # only scan the first 2000 lines of any file
+TIER1_MAX_BYTES   = 64  * 1024   # Tier 1 files: full scan up to 64 KB
+TIER2_MAX_BYTES   = 256 * 1024   # Tier 2 files: skip if larger than 256 KB
+TIER2_FILE_BUDGET = 120          # max additional files scanned from Tier 2
+MAX_LINES_READ    = 5000         # max lines read from any single file
+MAX_SCAN_DEPTH    = 6            # max recursion depth for Tier 2
 
-# Directories that are never worth scanning
 SKIP_DIRS = {
     "node_modules", ".git", "__pycache__", ".venv", "venv",
     "dist", "build", "coverage", ".cache", "eval-viewer",
-    ".next", ".nuxt", "vendor",
+    ".next", ".nuxt", "vendor", ".yarn",
+}
+
+SKIP_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg",
+    ".woff", ".woff2", ".ttf", ".eot",
+    ".zip", ".gz", ".tar", ".bin", ".pyc", ".map",
+    ".lock", ".exe", ".dll", ".so", ".dylib",
+}
+
+TEXT_EXTENSIONS = {
+    ".py", ".js", ".ts", ".sh", ".bash", ".zsh",
+    ".json", ".md", ".txt", ".yaml", ".yml", ".toml", ".html", ".css",
+    ".mjs", ".cjs", ".jsx", ".tsx",
 }
 
 # ---------------------------------------------------------------------------
@@ -40,10 +58,11 @@ SKIP_DIRS = {
 class Flag:
     dimension: str   # security | token_bloat | hidden_cost
     severity: str    # critical | high | medium | low
-    rule: str        # rule-id
-    detail: str      # human-readable warning
+    rule: str
+    detail: str
     file: str        # relative path within skill dir
-    line: int = 0    # 0 = file-level
+    line: int = 0    # first line where rule matched (0 = file-level)
+    count: int = 1   # total number of matches in this file
 
 # ---------------------------------------------------------------------------
 # Rules
@@ -59,7 +78,9 @@ CONTENT_RULES = [
     (
         "sec-exec", "security", "critical",
         re.compile(
-            r"exec\s*\(|child_process|subprocess\.(run|call|Popen|check_output)|os\.system\s*\(",
+            r"child_process|subprocess\s*\.\s*(run|call|Popen|check_output)"
+            r"|os\s*\.\s*system\s*\("
+            r"|\bexec\s*\(\s*['\"`]",
             re.IGNORECASE,
         ),
         "调用 shell 执行（exec/subprocess/child_process），存在代码注入风险。",
@@ -67,10 +88,10 @@ CONTENT_RULES = [
     (
         "sec-exfil", "security", "high",
         re.compile(
-            r"\b(fetch|axios|requests\.(get|post|put|delete|patch)|curl|wget)\b.*https?://(?!localhost|127\.0\.0\.1)",
+            r"\b(fetch|axios|requests\s*\.\s*(get|post|put|delete|patch)|curl|wget)\b",
             re.IGNORECASE,
         ),
-        "向外部主机发起网络请求，可能存在数据外泄。",
+        "发起网络请求，请确认目标地址是否合法（非本地）。",
     ),
     (
         "sec-cred", "security", "high",
@@ -83,22 +104,27 @@ CONTENT_RULES = [
     (
         "sec-obfuscate", "security", "high",
         re.compile(
-            r"(base64\.b64decode|Buffer\.from\([^,]+,\s*['\"]base64['\"]|\\x[0-9a-f]{2}){3,}",
-            re.IGNORECASE,
+            r"base64\.b64decode"
+            r"|Buffer\.from\s*\([^,\n]{0,80},\s*['\"]base64['\"]"
+            r"|(\\x[0-9a-fA-F]{2}){4,}",
         ),
-        "存在 base64/十六进制链式解码，是常见的代码混淆手法。",
+        "存在 base64/十六进制解码，是常见的代码混淆手法。",
     ),
     (
         "sec-dynamic-import", "security", "medium",
-        re.compile(r"(await\s+import\s*\(\s*[^'\"(]|require\s*\(\s*[^'\"(])", re.IGNORECASE),
-        "动态 import 路径由运行时计算，可能加载任意模块。",
+        re.compile(
+            r"await\s+import\s*\(\s*(?!['\"`])"
+            r"|require\s*\(\s*(?!['\"`])",
+            re.IGNORECASE,
+        ),
+        "动态 import 路径由运行时变量决定，可能加载任意模块。",
     ),
     (
         "sec-prompt-inject", "security", "critical",
         re.compile(
             r"[\u200b\u200c\u200d\u2060\ufeff\u00ad]"
             r"|[\u0430\u0435\u043e\u0440\u0441\u0443\u0445]"
-            r"|(ignore (all |previous )?(instructions?|rules?|guidelines?))",
+            r"|\bignore\s+(all\s+|previous\s+)?(instructions?|rules?|guidelines?)\b",
             re.IGNORECASE,
         ),
         "SKILL.md 中检测到不可见字符、同形字或越狱指令，疑似 Prompt 注入攻击。",
@@ -106,8 +132,8 @@ CONTENT_RULES = [
     # Token Bloat
     (
         "tok-agents-embed", "token_bloat", "medium",
-        re.compile(r"(AGENTS\.md|CLAUDE\.md|MEMORY\.md)", re.IGNORECASE),
-        "引用或嵌入了工作区配置文件，每次调用都会将其拉入上下文消耗 token。",
+        re.compile(r"\b(AGENTS\.md|CLAUDE\.md|MEMORY\.md)\b", re.IGNORECASE),
+        "引用或嵌入工作区配置文件，每次调用都会将其拉入上下文消耗 token。",
     ),
     (
         "tok-wide-trigger", "token_bloat", "low",
@@ -121,7 +147,10 @@ CONTENT_RULES = [
     (
         "hid-heartbeat-abuse", "hidden_cost", "high",
         re.compile(
-            r"(HEARTBEAT\.md|add.*to.*heartbeat|run.*periodically|schedule.*this skill)",
+            r"HEARTBEAT\.md"
+            r"|add\s+.{0,30}\s+to\s+.{0,30}\s+heartbeat"
+            r"|run\s+periodically"
+            r"|schedule\s+this\s+skill",
             re.IGNORECASE,
         ),
         "skill 指示 agent 将自身加入 heartbeat 定时任务，导致持续 token 消耗。",
@@ -129,116 +158,148 @@ CONTENT_RULES = [
     (
         "hid-cron-plant", "hidden_cost", "critical",
         re.compile(
-            r"(crontab|launchd|\.plist|systemd|\.timer|schedule\.every)",
+            r"\bcrontab\b|launchd|\bsystemd\b|\.timer\b|schedule\.every",
             re.IGNORECASE,
         ),
         "skill 植入了 cron/launchd/systemd 定时任务，会产生后台持续成本。",
     ),
     (
         "hid-self-reinstall", "hidden_cost", "high",
-        re.compile(r"npx skills add", re.IGNORECASE),
+        re.compile(r"npx\s+skills\s+add", re.IGNORECASE),
         "skill 尝试安装或重新安装自身/其他 skill，存在自我复制行为。",
     ),
     (
         "hid-always-load", "hidden_cost", "medium",
         re.compile(
-            r"\b(always load|load on every session|load at startup|preload this skill)\b",
+            r"\b(always\s+load|load\s+on\s+every\s+session|load\s+at\s+startup|preload\s+this\s+skill)\b",
             re.IGNORECASE,
         ),
         "skill 要求每次会话都预加载，会增加每轮对话的固定 token 开销。",
     ),
 ]
 
-SKIP_EXTENSIONS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico",
-    ".woff", ".woff2", ".ttf", ".eot",
-    ".zip", ".gz", ".tar", ".bin", ".pyc", ".map", ".lock", ".svg",
-}
-
-TEXT_EXTENSIONS = {
-    ".py", ".js", ".ts", ".sh", ".bash", ".zsh",
-    ".json", ".md", ".txt", ".yaml", ".yml", ".toml", ".html", ".css",
-}
-
-DUPLICATE_WINDOW = 5
+DUPLICATE_WINDOW    = 5
 DUPLICATE_THRESHOLD = 3
 
 # ---------------------------------------------------------------------------
-# Bounded file iterator
+# File collection: priority tiers
 # ---------------------------------------------------------------------------
 
-def iter_skill_files(skill_path: Path):
+def _is_text(path: Path) -> bool:
+    return path.suffix.lower() in TEXT_EXTENSIONS or path.suffix == ""
+
+
+def _skip(path: Path) -> bool:
+    return path.suffix.lower() in SKIP_EXTENSIONS
+
+
+def collect_tier1(skill_path: Path) -> list:
     """
-    Yield text files inside skill_path up to MAX_FILES_PER_SKILL,
-    respecting MAX_SCAN_DEPTH and SKIP_DIRS, skipping oversized files.
+    Tier 1: always fully scanned.
+      - SKILL.md (no size gate — primary attack surface)
+      - everything inside scripts/ recursively, up to TIER1_MAX_BYTES
+      - text files directly in the skill root, up to TIER1_MAX_BYTES
     """
-    count = 0
+    files = []
+
+    skill_md = skill_path / "SKILL.md"
+    if skill_md.exists() and skill_md.is_file():
+        files.append(skill_md)
+
+    scripts_dir = skill_path / "scripts"
+    if scripts_dir.exists():
+        for f in sorted(scripts_dir.rglob("*")):
+            if f.is_file() and _is_text(f) and not _skip(f):
+                try:
+                    if f.stat().st_size <= TIER1_MAX_BYTES:
+                        files.append(f)
+                except OSError:
+                    pass
+
+    for f in sorted(skill_path.iterdir()):
+        if f.is_file() and _is_text(f) and not _skip(f) and f != skill_md:
+            try:
+                if f.stat().st_size <= TIER1_MAX_BYTES:
+                    files.append(f)
+            except OSError:
+                pass
+
+    seen = set()
+    result = []
+    for f in files:
+        if f not in seen:
+            seen.add(f)
+            result.append(f)
+    return result
+
+
+def collect_tier2(skill_path: Path, already_scanned: set) -> list:
+    """
+    Tier 2: remaining subdirectories, bounded by TIER2_FILE_BUDGET and MAX_SCAN_DEPTH.
+    Prioritises shallow, small files — most likely to contain relevant code.
+    """
+    candidates = []
 
     def _walk(directory: Path, depth: int):
-        nonlocal count
-        if depth > MAX_SCAN_DEPTH or count >= MAX_FILES_PER_SKILL:
+        if depth > MAX_SCAN_DEPTH:
             return
         try:
             entries = sorted(directory.iterdir())
         except PermissionError:
             return
         for entry in entries:
-            if count >= MAX_FILES_PER_SKILL:
-                return
             if entry.is_dir():
                 if entry.name in SKIP_DIRS or entry.name.startswith("."):
                     continue
+                if entry == skill_path / "scripts":
+                    continue
                 _walk(entry, depth + 1)
             elif entry.is_file():
-                if entry.suffix.lower() in SKIP_EXTENSIONS:
+                if entry in already_scanned:
                     continue
-                if entry.suffix.lower() not in TEXT_EXTENSIONS and entry.suffix != "":
+                if _skip(entry) or not _is_text(entry):
                     continue
                 try:
-                    if entry.stat().st_size > MAX_FILE_BYTES:
-                        continue
+                    size = entry.stat().st_size
                 except OSError:
                     continue
-                count += 1
-                yield entry
+                if size > TIER2_MAX_BYTES:
+                    continue
+                candidates.append((depth, size, entry))
 
-    yield from _walk(skill_path, 0)
+    _walk(skill_path, 1)
+    candidates.sort(key=lambda x: (x[0], x[1]))
+    return [f for _, _, f in candidates[:TIER2_FILE_BUDGET]]
 
+# ---------------------------------------------------------------------------
+# Scan a single file — reports count of matches per rule, not just first hit
+# ---------------------------------------------------------------------------
 
-def read_limited(fpath: Path) -> list:
-    """Read up to MAX_LINES_READ lines from a file."""
+def scan_file(fpath: Path, skill_path: Path) -> list:
     try:
         text = fpath.read_text(errors="replace")
     except OSError:
         return []
-    return text.splitlines()[:MAX_LINES_READ]
+
+    lines = text.splitlines()[:MAX_LINES_READ]
+    rel = str(fpath.relative_to(skill_path))
+
+    hits: dict = {}  # rule_id -> [first_lineno, count, dimension, severity, detail]
+    for lineno, line in enumerate(lines, 1):
+        for rule_id, dimension, severity, pattern, detail in CONTENT_RULES:
+            if pattern.search(line):
+                if rule_id not in hits:
+                    hits[rule_id] = [lineno, 0, dimension, severity, detail]
+                hits[rule_id][1] += 1
+
+    return [
+        Flag(dimension, severity, rule_id, detail, rel, line=first_line, count=count)
+        for rule_id, (first_line, count, dimension, severity, detail) in hits.items()
+    ]
 
 # ---------------------------------------------------------------------------
-# Checkers
+# Structural checkers
 # ---------------------------------------------------------------------------
-
-def scan_content(skill_path: Path) -> list:
-    flags = []
-    seen = set()
-
-    for fpath in iter_skill_files(skill_path):
-        if "openclaw-skill-auditor" in str(fpath):
-            continue
-
-        rel = str(fpath.relative_to(skill_path))
-        lines = read_limited(fpath)
-
-        for lineno, line in enumerate(lines, 1):
-            for rule_id, dimension, severity, pattern, detail in CONTENT_RULES:
-                key = f"{rule_id}:{rel}"
-                if key in seen:
-                    continue
-                if pattern.search(line):
-                    flags.append(Flag(dimension, severity, rule_id, detail, rel, line=lineno))
-                    seen.add(key)
-
-    return flags
-
 
 def check_skill_size(skill_path: Path):
     md = skill_path / "SKILL.md"
@@ -263,14 +324,14 @@ def check_ref_size(skill_path: Path) -> list:
     if not refs.exists():
         return flags
     try:
-        entries = list(refs.iterdir())
+        entries = list(refs.rglob("*"))
     except PermissionError:
         return flags
     for f in entries:
         if not f.is_file() or f.suffix not in (".md", ".txt", ".rst"):
             continue
         try:
-            if f.stat().st_size > MAX_FILE_BYTES:
+            if f.stat().st_size > TIER2_MAX_BYTES:
                 continue
             n = len(f.read_text(errors="replace").splitlines())
         except OSError:
@@ -288,7 +349,10 @@ def check_duplicate_blocks(skill_path: Path):
     md = skill_path / "SKILL.md"
     if not md.exists():
         return None
-    lines = read_limited(md)
+    try:
+        lines = md.read_text(errors="replace").splitlines()[:MAX_LINES_READ]
+    except OSError:
+        return None
     counts = Counter()
     for i in range(len(lines) - DUPLICATE_WINDOW + 1):
         block = "\n".join(lines[i:i + DUPLICATE_WINDOW]).strip()
@@ -310,7 +374,7 @@ def check_mcp_tools(skill_path: Path):
         if not fpath.exists():
             continue
         try:
-            if fpath.stat().st_size > MAX_FILE_BYTES:
+            if fpath.stat().st_size > TIER2_MAX_BYTES:
                 continue
             data = json.loads(fpath.read_text())
             tools = data.get("tools", [])
@@ -330,18 +394,23 @@ def check_mcp_tools(skill_path: Path):
 
 def audit_skill(skill_path: Path) -> dict:
     flags = []
-    flags.extend(scan_content(skill_path))
+
+    tier1_files = collect_tier1(skill_path)
+    tier1_set = set(tier1_files)
+    for fpath in tier1_files:
+        flags.extend(scan_file(fpath, skill_path))
+
+    tier2_files = collect_tier2(skill_path, tier1_set)
+    for fpath in tier2_files:
+        flags.extend(scan_file(fpath, skill_path))
 
     f = check_skill_size(skill_path)
     if f:
         flags.append(f)
-
     flags.extend(check_ref_size(skill_path))
-
     f = check_duplicate_blocks(skill_path)
     if f:
         flags.append(f)
-
     f = check_mcp_tools(skill_path)
     if f:
         flags.append(f)
@@ -350,6 +419,9 @@ def audit_skill(skill_path: Path) -> dict:
         "skill": skill_path.name,
         "path": str(skill_path),
         "has_risk": len(flags) > 0,
+        "scanned_files": len(tier1_files) + len(tier2_files),
+        "tier1_files": len(tier1_files),
+        "tier2_files": len(tier2_files),
         "flags": [asdict(f) for f in flags],
     }
 
@@ -399,10 +471,11 @@ def resolve_skill_roots(extra=None) -> list:
 def run(roots, out: Path) -> int:
     if not roots:
         print("ERROR: 未找到任何 skill 目录。", file=sys.stderr)
-        print("已查找: ~/.openclaw/workspace/skills, ~/.openclaw/skills, ~/.agents/skills", file=sys.stderr)
+        print("已查找: ~/.openclaw/workspace/skills, ~/.openclaw/skills, ~/.agents/skills",
+              file=sys.stderr)
         return 1
 
-    seen_names = set()
+    seen_names: set = set()
     skill_dirs = []
     for root in roots:
         try:
@@ -429,16 +502,16 @@ def run(roots, out: Path) -> int:
         results.append(result)
 
     flagged = [r for r in results if r["has_risk"]]
-    clean = [r for r in results if not r["has_risk"]]
+    clean   = [r for r in results if not r["has_risk"]]
 
     report = {
-        "scanned_at": datetime.now().isoformat(timespec="seconds"),
-        "roots": [str(r) for r in roots],
-        "skill_count": len(results),
+        "scanned_at":    datetime.now().isoformat(timespec="seconds"),
+        "roots":         [str(r) for r in roots],
+        "skill_count":   len(results),
         "flagged_count": len(flagged),
-        "clean_count": len(clean),
-        "flagged": flagged,
-        "clean": [r["skill"] for r in clean],
+        "clean_count":   len(clean),
+        "flagged":       flagged,
+        "clean":         [r["skill"] for r in clean],
     }
 
     out.parent.mkdir(parents=True, exist_ok=True)
