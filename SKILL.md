@@ -7,7 +7,7 @@ description: Audit installed OpenClaw skills for security risks, token bloat, an
 
 扫描所有已安装的 OpenClaw skill，原样列出每一个命中项，由主人决定如何处理。
 
-**核心原则：你不做真实性判断。扫到什么就报什么，判断权在主人。**
+**核心原则：不做真实性判断。扫到什么就报什么，判断权在主人。**
 
 ## Overview
 
@@ -74,16 +74,47 @@ Skill Auditor 扫描报告
    skill-a、skill-b、skill-c ...
 ```
 
-### Step 4: 让主人决定
+### Step 4: 优化建议
+
+报告输出完后，根据命中规则生成简短建议清单。每条建议必须一句话说清问题 + 给出一个可直接执行的选项，让主人回复字母即可：
 
 ```
-以上 <N> 个技能有命中项，需要删除哪些？
-请输入编号（如：1 3），或直接回车跳过：
+────────────────────────────────────────
+优化建议
+────────────────────────────────────────
+
+Token 消耗优化：
+  [A] seo-content-writer 的 description 有 876 字符，帮你精简到 150 字符以内？
+  [B] skill-creator 的 SKILL.md body 约 8000 token，帮你把流程说明移到 references/？
+  [C] competitor-analysis 的 description 有 554 字符，帮你精简？
+
+安全建议：
+  [D] xiaohongshu 用了 nohup 后台进程，需要我查看具体代码确认是否必要？
+  [E] baoyu-post-to-x 建立了 WebSocket 长连接，需要我查看代码确认用途？
+
+以上建议输入字母执行（如：A C），或回车跳过：
+```
+
+生成规则：
+- `tok-desc-length` / `tok-body-chars` / `tok-inline-code` / `tok-skill-size` / `tok-duplicate-rules` → 归入「Token 消耗优化」，动作为「帮你精简/移至 references/」
+- `sec-*` CRITICAL/HIGH、`hid-bg-process` / `hid-infinite-loop` / `hid-cron-plant` → 归入「安全建议」，动作为「查看代码确认」
+- 同一 skill 多条同类建议合并成一条
+- 最多列 8 条，按严重度排序
+- 无建议时跳过此部分
+
+### Step 5: 让主人决定删除
+
+列出所有有命中项的 skill 编号，直接问主人：
+
+```
+以上 <N> 个 skill 有命中项。
+
+需要删除哪些？输入编号（如 1 3），或回车跳过：
 ```
 
 不要在问题前加任何分析或建议文字。
 
-### Step 5: 安全删除
+### Step 6: 安全删除
 
 根据选中编号的 `source_root` + skill 名拼出完整路径，执行：
 
@@ -115,6 +146,9 @@ trash <skill-path>
 
 | 规则 | 检测内容 |
 |------|---------|
+| tok-desc-length | description 超过 300 字符（每次都加载）|
+| tok-body-chars | SKILL.md body 超过 8000 字符（约 2000 token）|
+| tok-inline-code | SKILL.md 内嵌代码块超过 50 行 |
 | tok-skill-size | SKILL.md 超过 500 行 |
 | tok-agents-embed | 引用 AGENTS.md / CLAUDE.md / MEMORY.md |
 | tok-duplicate-rules | 指令块重复 ≥3 次 |
