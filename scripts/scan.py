@@ -4,8 +4,8 @@ OpenClaw Skill Auditor - Static scanner
 Scans installed OpenClaw skills for security, token bloat, and hidden cost risks.
 
 Priority-based scanning:
-  Tier 1 — always fully scanned: SKILL.md, scripts/, root-level files <= 64 KB
-  Tier 2 — scanned until budget: remaining subdirs, depth <= 6, files <= 256 KB
+  Tier 1 - always fully scanned: SKILL.md, scripts/, root-level files <= 64 KB
+  Tier 2 - scanned until budget: remaining subdirs, depth <= 6, files <= 256 KB
   Markdown code fences stripped before scanning to suppress doc false positives.
 
 Usage:
@@ -59,7 +59,6 @@ class Flag:
 
 
 CONTENT_RULES = [
-    # Security
     (
         "sec-eval", "security", "critical",
         re.compile(r"\beval\s*\(", re.IGNORECASE),
@@ -70,43 +69,29 @@ CONTENT_RULES = [
         re.compile(
             r"child_process|subprocess\s*\.\s*(run|call|Popen|check_output)"
             r"|os\s*\.\s*system\s*\("
-            r"|\bexec\s*\(\s*['\"` ]",
+            r"|\bexec\s*\(\s*['\"`]",
             re.IGNORECASE,
         ),
         "调用 shell 执行（exec/subprocess/child_process），存在代码注入风险。",
     ),
     (
         "sec-exfil", "security", "high",
-        re.compile(
-            r"\b(fetch|axios|requests\s*\.\s*(get|post|put|delete|patch)|curl|wget)\b",
-            re.IGNORECASE,
-        ),
+        re.compile(r"\b(fetch|axios|requests\s*\.\s*(get|post|put|delete|patch)|curl|wget)\b", re.IGNORECASE),
         "发起网络请求，请确认目标地址是否合法（非本地）。",
     ),
     (
         "sec-cred", "security", "high",
-        re.compile(
-            r"(\.env|id_rsa|id_ed25519|\.pem|api[_-]?key|secret[_-]?key|wallet\.json|keystore)",
-            re.IGNORECASE,
-        ),
+        re.compile(r"(\.env|id_rsa|id_ed25519|\.pem|api[_-]?key|secret[_-]?key|wallet\.json|keystore)", re.IGNORECASE),
         "读取凭证或密钥文件，请确认此操作是否必要且合法。",
     ),
     (
         "sec-obfuscate", "security", "high",
-        re.compile(
-            r"base64\.b64decode"
-            r"|Buffer\.from\s*\([^,\n]{0,80},\s*['\"]base64['\"]"
-            r"|(\\x[0-9a-fA-F]{2}){4,}",
-        ),
+        re.compile(r"base64\.b64decode|Buffer\.from\s*\([^,\n]{0,80},\s*['\"]base64['\"]|(\\x[0-9a-fA-F]{2}){4,}"),
         "存在 base64/十六进制解码，是常见的代码混淆手法。",
     ),
     (
         "sec-dynamic-import", "security", "medium",
-        re.compile(
-            r"await\s+import\s*\(\s*(?!['\"` ])"
-            r"|require\s*\(\s*(?!['\"` ])",
-            re.IGNORECASE,
-        ),
+        re.compile(r"await\s+import\s*\(\s*(?!['\"`])|require\s*\(\s*(?!['\"`])", re.IGNORECASE),
         "动态 import 路径由运行时变量决定，可能加载任意模块。",
     ),
     (
@@ -119,7 +104,6 @@ CONTENT_RULES = [
         ),
         "SKILL.md 中检测到不可见字符、同形字或越狱指令，疑似 Prompt 注入攻击。",
     ),
-    # Token Bloat
     (
         "tok-agents-embed", "token_bloat", "medium",
         re.compile(r"\b(AGENTS\.md|CLAUDE\.md|MEMORY\.md)\b", re.IGNORECASE),
@@ -127,30 +111,17 @@ CONTENT_RULES = [
     ),
     (
         "tok-wide-trigger", "token_bloat", "low",
-        re.compile(
-            r"\b(any task|everything|all tasks|always use this skill|use for all|use this for everything)\b",
-            re.IGNORECASE,
-        ),
+        re.compile(r"\b(any task|everything|all tasks|always use this skill|use for all|use this for everything)\b", re.IGNORECASE),
         "触发词过于宽泛，可能导致 skill 被不必要地频繁激活。",
     ),
-    # Hidden Cost
     (
         "hid-heartbeat-abuse", "hidden_cost", "high",
-        re.compile(
-            r"HEARTBEAT\.md"
-            r"|add\s+.{0,30}\s+to\s+.{0,30}\s+heartbeat"
-            r"|run\s+periodically"
-            r"|schedule\s+this\s+skill",
-            re.IGNORECASE,
-        ),
+        re.compile(r"HEARTBEAT\.md|add\s+.{0,30}\s+to\s+.{0,30}\s+heartbeat|run\s+periodically|schedule\s+this\s+skill", re.IGNORECASE),
         "skill 指示 agent 将自身加入 heartbeat 定时任务，导致持续 token 消耗。",
     ),
     (
         "hid-cron-plant", "hidden_cost", "critical",
-        re.compile(
-            r"\bcrontab\b|launchd|\bsystemd\b|\.timer\b|schedule\.every",
-            re.IGNORECASE,
-        ),
+        re.compile(r"\bcrontab\b|launchd|\bsystemd\b|\.timer\b|schedule\.every", re.IGNORECASE),
         "skill 植入了 cron/launchd/systemd 定时任务，会产生后台持续成本。",
     ),
     (
@@ -160,63 +131,36 @@ CONTENT_RULES = [
     ),
     (
         "hid-always-load", "hidden_cost", "medium",
-        re.compile(
-            r"\b(always\s+load|load\s+on\s+every\s+session|load\s+at\s+startup|preload\s+this\s+skill)\b",
-            re.IGNORECASE,
-        ),
+        re.compile(r"\b(always\s+load|load\s+on\s+every\s+session|load\s+at\s+startup|preload\s+this\s+skill)\b", re.IGNORECASE),
         "skill 要求每次会话都预加载，会增加每轮对话的固定 token 开销。",
     ),
     (
         "hid-bg-process", "hidden_cost", "high",
         re.compile(
-            r"nohup\s"
-            r"|(\bpython\b|\bnode\b|\bbun\b).{0,60}\s&\s*$"
-            r"|\bPopen\s*\(.{0,80}daemon\s*=\s*True"
-            r"|\bpm2\s+start\b"
-            r"|\bforever\s+start\b"
-            r"|\bsupervisord\b|\bsupervisorctl\b",
+            r"nohup\s|(\bpython\b|\bnode\b|\bbun\b).{0,60}\s&\s*$"
+            r"|\bPopen\s*\(.{0,80}daemon\s*=\s*True|\bpm2\s+start\b|\bforever\s+start\b|\bsupervisord\b|\bsupervisorctl\b",
             re.IGNORECASE | re.MULTILINE,
         ),
         "启动后台持久进程（nohup/pm2/forever/daemon），会在 agent 会话结束后继续运行。",
     ),
     (
         "hid-infinite-loop", "hidden_cost", "high",
-        re.compile(
-            r"while\s+True\s*:"
-            r"|while\s*\(\s*true\s*\)"
-            r"|for\s*\(\s*;\s*;\s*\)"
-            r"|\bwhile\s+true\s*;?\s*do\b",
-            re.IGNORECASE,
-        ),
+        re.compile(r"while\s+True\s*:|while\s*\(\s*true\s*\)|for\s*\(\s*;\s*;\s*\)|\bwhile\s+true\s*;?\s*do\b", re.IGNORECASE),
         "包含无限循环，可能持续占用资源或轮询执行。",
     ),
     (
         "hid-set-interval", "hidden_cost", "medium",
-        re.compile(
-            r"\bsetInterval\s*\("
-            r"|\bsetTimeout\s*\(.{0,120}\bsetTimeout\b",
-            re.IGNORECASE,
-        ),
+        re.compile(r"\bsetInterval\s*\(|\bsetTimeout\s*\(.{0,120}\bsetTimeout\b", re.IGNORECASE),
         "使用 setInterval 或递归 setTimeout 实现持续定时执行。",
     ),
     (
         "hid-websocket", "hidden_cost", "medium",
-        re.compile(
-            r"\bnew\s+WebSocket\s*\("
-            r"|\bwebsockets\b"
-            r"|\bws://|wss://",
-            re.IGNORECASE,
-        ),
+        re.compile(r"\bnew\s+WebSocket\s*\(|\bwebsockets\b|\bws://|wss://", re.IGNORECASE),
         "建立 WebSocket 长连接，会持续保持与远端的连接。",
     ),
     (
         "hid-sleep-loop", "hidden_cost", "low",
-        re.compile(
-            r"\btime\.sleep\s*\(\s*\d"
-            r"|\basyncio\.sleep\s*\(\s*\d"
-            r"|\bsleep\s+\d+",
-            re.IGNORECASE,
-        ),
+        re.compile(r"\btime\.sleep\s*\(\s*\d|\basyncio\.sleep\s*\(\s*\d|\bsleep\s+\d+", re.IGNORECASE),
         "包含 sleep 调用，常与循环结合实现隐式轮询，需结合上下文确认。",
     ),
 ]
@@ -324,6 +268,77 @@ def scan_file(fpath: Path, skill_path: Path) -> list:
         for rule_id, (first_line, count, dimension, severity, detail) in hits.items()
     ]
 
+# ---------------------------------------------------------------------------
+# Structural checkers
+# ---------------------------------------------------------------------------
+
+def _parse_frontmatter(md_path: Path):
+    """Return (frontmatter_str, body_str) or (None, full_text)."""
+    try:
+        text = md_path.read_text(errors="replace")
+    except OSError:
+        return None, ""
+    m = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
+    if not m:
+        return None, text
+    return m.group(1), text[m.end():]
+
+def check_description_length(skill_path: Path):
+    """description 每次随 skill 列表加载进上下文，过长直接增加固定 token 消耗。"""
+    md = skill_path / "SKILL.md"
+    fm, _ = _parse_frontmatter(md)
+    if not fm:
+        return None
+    dm = re.search(r"^description:\s*(.+)$", fm, re.MULTILINE)
+    if not dm:
+        return None
+    desc = dm.group(1).strip().strip('"').strip("'")
+    chars = len(desc)
+    if chars > 300:
+        return Flag(
+            "token_bloat", "medium", "tok-desc-length",
+            f"description 共 {chars} 字符（约 {chars//4} token），每次 skill 列表加载时都会消耗。建议精简至 300 字符以内。",
+            "SKILL.md",
+        )
+    return None
+
+def check_body_size(skill_path: Path):
+    """SKILL.md body 估算 token 数，超大的 body 每次触发都消耗。"""
+    md = skill_path / "SKILL.md"
+    _, body = _parse_frontmatter(md)
+    chars = len(body)
+    if chars > 8000:
+        return Flag(
+            "token_bloat", "high", "tok-body-chars",
+            f"SKILL.md body 约 {chars//4} token（{chars} 字符），每次触发都消耗。建议将详细说明移至 references/ 按需加载。",
+            "SKILL.md",
+        )
+    return None
+
+def check_inline_code_blocks(skill_path: Path):
+    """SKILL.md body 中超长的内嵌代码块每次触发都进入上下文。"""
+    md = skill_path / "SKILL.md"
+    _, body = _parse_frontmatter(md)
+    lines = body.splitlines()
+    in_fence = False
+    block_lines = 0
+    max_block = 0
+    for line in lines:
+        if line.strip().startswith("```"):
+            if in_fence:
+                max_block = max(max_block, block_lines)
+                block_lines = 0
+            in_fence = not in_fence
+        elif in_fence:
+            block_lines += 1
+    if max_block > 50:
+        return Flag(
+            "token_bloat", "low", "tok-inline-code",
+            f"SKILL.md 中最大代码块约 {max_block} 行，内嵌代码每次触发都进入上下文。建议移至 scripts/ 或 references/。",
+            "SKILL.md",
+        )
+    return None
+
 def check_skill_size(skill_path: Path):
     md = skill_path / "SKILL.md"
     if not md.exists():
@@ -377,8 +392,7 @@ def check_duplicate_blocks(skill_path: Path):
     repeated = [b for b, c in counts.items() if c >= DUPLICATE_THRESHOLD]
     if repeated:
         return Flag("token_bloat", "medium", "tok-duplicate-rules",
-            f"SKILL.md 中有 {len(repeated)} 个指令块重复出现 ≥{DUPLICATE_THRESHOLD} 次，存在冗余。",
-            "SKILL.md")
+            f"SKILL.md 中有 {len(repeated)} 个指令块重复出现 ≥{DUPLICATE_THRESHOLD} 次，存在冗余。", "SKILL.md")
     return None
 
 def check_mcp_tools(skill_path: Path):
@@ -393,11 +407,14 @@ def check_mcp_tools(skill_path: Path):
             tools = data.get("tools", [])
             if len(tools) > 10:
                 return Flag("hidden_cost", "medium", "hid-tool-spam",
-                    f"{fname} 注册了 {len(tools)} 个工具（超过 10 个），会使每次 tool-call 的上下文膨胀。",
-                    fname)
+                    f"{fname} 注册了 {len(tools)} 个工具（超过 10 个），会使每次 tool-call 的上下文膨胀。", fname)
         except (OSError, json.JSONDecodeError, KeyError):
             pass
     return None
+
+# ---------------------------------------------------------------------------
+# Per-skill audit
+# ---------------------------------------------------------------------------
 
 def audit_skill(skill_path: Path) -> dict:
     flags = []
@@ -408,13 +425,14 @@ def audit_skill(skill_path: Path) -> dict:
     tier2_files = collect_tier2(skill_path, tier1_set)
     for fpath in tier2_files:
         flags.extend(scan_file(fpath, skill_path))
-    f = check_skill_size(skill_path)
-    if f: flags.append(f)
+
+    for check in (check_description_length, check_body_size, check_inline_code_blocks,
+                  check_skill_size, check_duplicate_blocks, check_mcp_tools):
+        f = check(skill_path)
+        if f:
+            flags.append(f)
     flags.extend(check_ref_size(skill_path))
-    f = check_duplicate_blocks(skill_path)
-    if f: flags.append(f)
-    f = check_mcp_tools(skill_path)
-    if f: flags.append(f)
+
     return {
         "skill": skill_path.name,
         "path": str(skill_path),
@@ -424,6 +442,10 @@ def audit_skill(skill_path: Path) -> dict:
         "tier2_files": len(tier2_files),
         "flags": [asdict(f) for f in flags],
     }
+
+# ---------------------------------------------------------------------------
+# Path resolution & run
+# ---------------------------------------------------------------------------
 
 def resolve_skill_roots(extra=None) -> list:
     home = Path.home()
@@ -459,8 +481,7 @@ def resolve_skill_roots(extra=None) -> list:
 def run(roots, out: Path) -> int:
     if not roots:
         print("ERROR: 未找到任何 skill 目录。", file=sys.stderr)
-        print("已查找: ~/.openclaw/workspace/skills, ~/.openclaw/skills, ~/.agents/skills",
-              file=sys.stderr)
+        print("已查找: ~/.openclaw/workspace/skills, ~/.openclaw/skills, ~/.agents/skills", file=sys.stderr)
         return 1
     seen_names: set = set()
     skill_dirs = []
