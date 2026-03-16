@@ -74,36 +74,66 @@ Skill Auditor 扫描报告
    skill-a、skill-b ...
 ```
 
-### Step 4: 优化建议（必须执行，不可跳过）
+### Step 4: 处置建议（必须执行，不可跳过）
 
-报告输出完毕后，**立即**根据 flags 生成建议。**禁止在此处加入任何判断或「简要说明」。**
+报告输出完毕后，**立即**逐技能输出处置建议。**每个有命中的技能都必须给出建议，覆盖所有命中的维度。** 禁止加入任何主观判断。
 
-遍历所有命中的技能，按以下映射生成建议条目，分配字母编号：
+每个技能最多三条建议（安全 / Token消耗 / 隐性消耗各一条），按以下模板映射，分配字母编号：
 
-| flag 规则 | 建议文字 |
-|-----------|---------|
-| `tok-desc-length` | `<skill> 的 description 过长（N 字符），帮你精简到 150 字符以内？` |
-| `tok-body-chars` | `<skill> 的 SKILL.md 正文约 N token，帮你把详细说明移到 references/？` |
-| `tok-inline-code` / `tok-skill-size` / `tok-duplicate-rules` | `<skill> 的 SKILL.md 有冗余内容，帮你精简？` |
-| `sec-eval` / `sec-exec` / `sec-exfil` / `sec-cred`（严重/高） | `<skill> 检测到高危代码模式，需要我打开文件逐行核查？` |
-| `hid-cron-plant` / `hid-bg-process` / `hid-infinite-loop` | `<skill> 检测到后台持续运行模式，需要我查看代码确认是否必要？` |
+**安全问题（有任意 sec-* 命中时生成）：**
 
-合并：同一技能多条 tok-* 合并一条，多条安全/隐性问题合并一条。最多 8 条，severity 高的优先。
+| 命中情况 | 建议文字 |
+|---------|---------|
+| 仅 `sec-exfil` | `帮你检查 <skill> 的网络请求目标地址，确认是否只访问合法域名？` |
+| 仅 `sec-cred` | `帮你核查 <skill> 读取的凭证文件路径，确认权限范围是否合理？` |
+| 仅 `sec-eval` / `sec-exec` | `帮你逐行核查 <skill> 的可执行代码，确认是否存在注入风险？` |
+| 多条 sec-* 同时命中 | `帮你逐行核查 <skill> 的安全问题（列出类型：执行/网络/凭证），确认风险范围？` |
+
+**Token 消耗（有任意 tok-* 命中时生成）：**
+
+| 命中情况 | 建议文字 |
+|---------|---------|
+| `tok-desc-length` | `帮你把 <skill> 的 description 精简到 150 字符以内？` |
+| `tok-body-chars` / `tok-skill-size` | `帮你把 <skill> 的 SKILL.md 详细内容移到 references/ 按需加载？` |
+| `tok-duplicate-rules` | `帮你删除 <skill> 的 SKILL.md 中重复的指令块？` |
+| 多条 tok-* 同时命中 | `帮你精简 <skill> 的 SKILL.md，减少每次加载的 token 消耗？` |
+
+**隐性消耗（有任意 hid-* 命中时生成）：**
+
+| 命中情况 | 建议文字 |
+|---------|---------|
+| `hid-cron-plant` / `hid-bg-process` | `帮你核查 <skill> 的后台进程启动逻辑，确认是否必要且受控？` |
+| `hid-infinite-loop` / `hid-sleep-loop` | `帮你核查 <skill> 的循环逻辑，确认是否会持续占用资源？` |
+| `hid-websocket` / `hid-set-interval` | `帮你核查 <skill> 的长连接/定时逻辑，确认生命周期是否可控？` |
+| `hid-self-reinstall` / `hid-heartbeat-abuse` | `帮你核查 <skill> 是否会自动触发重复执行？` |
+| 多条 hid-* 同时命中 | `帮你核查 <skill> 的后台持续行为（列出类型），确认是否受控？` |
+
+输出格式，按技能分组：
 
 ```
 ────────────────────────────────────────
-可执行的优化建议
+处置建议
 ────────────────────────────────────────
-  [A] feishu-permission-setup 检测到高危代码模式，需要我打开文件逐行核查？
-  [B] skill-creator 的 SKILL.md 正文约 8000 token，帮你把详细说明移到 references/？
-  [C] seo-content-writer 的 description 过长（876 字符），帮你精简到 150 字符以内？
+
+【feishu-chat-reader】
+  [A] 帮你逐行核查 feishu-chat-reader 的安全问题（网络请求/凭证读取），确认风险范围？
+  [B] 帮你核查 feishu-chat-reader 的循环逻辑，确认是否会持续占用资源？
+
+【feishu-permission-setup】
+  [C] 帮你逐行核查 feishu-permission-setup 的安全问题（代码执行/凭证读取），确认风险范围？
+
+【us-stock-analysis】
+  [D] 帮你检查 us-stock-analysis 的网络请求目标地址，确认是否只访问合法域名？
+
+【weather】
+  [E] 帮你检查 weather 的网络请求目标地址，确认是否只访问合法域名？
 
 输入字母执行（如：A C），或回车跳过：
 ```
 
 ### Step 5: 让主人决定删除
 
-建议部分输出完、等待主人处理后，再输出：
+建议部分输出完、等待主人处理完之后，再输出：
 
 ```
 ────────────────────────────────────────
