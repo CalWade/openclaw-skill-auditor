@@ -42,81 +42,84 @@ Header:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Skill Auditor 扫描报告
 扫描时间：<scanned_at>
-共扫描 <skill_count> 个 skill — <flagged_count> 个有命中项，<clean_count> 个无命中
+共扫描 <skill_count> 个技能 — <flagged_count> 个有命中，<clean_count> 个正常
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-每个有命中的 skill，按此格式输出：
+每个有命中的技能，按此格式输出。同一条规则在不同文件重复命中的，合并为一条、count 累加：
 
 ```
-【N】<skill-name>  (<source_root>)
+【N】<skill-name>
 
   🔴 安全问题
-    · [严重] <rule> — <file> 第 <line> 行，共 <count> 处
-      <detail>
+    · [严重] <detail>（共 <count> 处）
+    · [高]   <detail>（共 <count> 处）
 
   🟡 Token 消耗
-    · [中] <rule> — <file> 第 <line> 行，共 <count> 处
-      <detail>
+    · [中]   <detail>（共 <count> 处）
 
   🟠 隐性消耗
-    · [高] <rule> — <file> 第 <line> 行，共 <count> 处
-      <detail>
+    · [高]   <detail>（共 <count> 处）
 ```
 
-级别对应：`critical`→严重 / `high`→高 / `medium`→中 / `low`→低
-维度对应：`security`→🔴 安全问题 / `token_bloat`→🟡 Token 消耗 / `hidden_cost`→🟠 隐性消耗
+不输出文件名和行号。级别、说明、次数即可。
 
-正常 skill：
+级别：`critical`→严重 / `high`→高 / `medium`→中 / `low`→低
+维度：`security`→🔴 安全问题 / `token_bloat`→🟡 Token 消耗 / `hidden_cost`→🟠 隐性消耗
+
+正常技能：
 
 ```
 ✅ 以下技能无命中（<clean_count> 个）：
-   skill-a、skill-b、skill-c ...
+   skill-a、skill-b ...
 ```
 
-### Step 4: 优化建议
+### Step 4: 优化建议（必须执行，不可跳过）
 
-报告输出完后，根据命中规则生成简短建议清单。每条建议必须一句话说清问题 + 给出一个可直接执行的选项，让主人回复字母即可：
+报告输出完毕后，**立即**根据 flags 生成建议。**禁止在此处加入任何判断或「简要说明」。**
+
+遍历所有命中的技能，按以下映射生成建议条目，分配字母编号：
+
+| flag 规则 | 建议文字 |
+|-----------|---------|
+| `tok-desc-length` | `<skill> 的 description 过长（N 字符），帮你精简到 150 字符以内？` |
+| `tok-body-chars` | `<skill> 的 SKILL.md 正文约 N token，帮你把详细说明移到 references/？` |
+| `tok-inline-code` / `tok-skill-size` / `tok-duplicate-rules` | `<skill> 的 SKILL.md 有冗余内容，帮你精简？` |
+| `sec-eval` / `sec-exec` / `sec-exfil` / `sec-cred`（严重/高） | `<skill> 检测到高危代码模式，需要我打开文件逐行核查？` |
+| `hid-cron-plant` / `hid-bg-process` / `hid-infinite-loop` | `<skill> 检测到后台持续运行模式，需要我查看代码确认是否必要？` |
+
+合并：同一技能多条 tok-* 合并一条，多条安全/隐性问题合并一条。最多 8 条，severity 高的优先。
 
 ```
 ────────────────────────────────────────
-优化建议
+可执行的优化建议
 ────────────────────────────────────────
+  [A] feishu-permission-setup 检测到高危代码模式，需要我打开文件逐行核查？
+  [B] skill-creator 的 SKILL.md 正文约 8000 token，帮你把详细说明移到 references/？
+  [C] seo-content-writer 的 description 过长（876 字符），帮你精简到 150 字符以内？
 
-Token 消耗优化：
-  [A] seo-content-writer 的 description 有 876 字符，帮你精简到 150 字符以内？
-  [B] skill-creator 的 SKILL.md body 约 8000 token，帮你把流程说明移到 references/？
-  [C] competitor-analysis 的 description 有 554 字符，帮你精简？
-
-安全建议：
-  [D] xiaohongshu 用了 nohup 后台进程，需要我查看具体代码确认是否必要？
-  [E] baoyu-post-to-x 建立了 WebSocket 长连接，需要我查看代码确认用途？
-
-以上建议输入字母执行（如：A C），或回车跳过：
+输入字母执行（如：A C），或回车跳过：
 ```
-
-生成规则：
-- `tok-desc-length` / `tok-body-chars` / `tok-inline-code` / `tok-skill-size` / `tok-duplicate-rules` → 归入「Token 消耗优化」，动作为「帮你精简/移至 references/」
-- `sec-*` CRITICAL/HIGH、`hid-bg-process` / `hid-infinite-loop` / `hid-cron-plant` → 归入「安全建议」，动作为「查看代码确认」
-- 同一 skill 多条同类建议合并成一条
-- 最多列 8 条，按严重度排序
-- 无建议时跳过此部分
 
 ### Step 5: 让主人决定删除
 
-列出所有有命中项的 skill 编号，直接问主人：
+建议部分输出完、等待主人处理后，再输出：
 
 ```
-以上 <N> 个 skill 有命中项。
+────────────────────────────────────────
+以上 <N> 个技能有命中项：
+  【1】feishu-permission-setup
+  【2】feishu-chat-reader
+  ...
 
-需要删除哪些？输入编号（如 1 3），或回车跳过：
+需要删除哪些？输入编号（如：1 3），或回车跳过：
 ```
 
-不要在问题前加任何分析或建议文字。
+**禁止在建议和删除之间插入任何判断、解释或「简要说明」。**
 
 ### Step 6: 安全删除
 
-根据选中编号的 `source_root` + skill 名拼出完整路径，执行：
+根据选中编号的 `source_root` + 技能名拼出完整路径，执行：
 
 ```bash
 trash <skill-path>
@@ -177,4 +180,4 @@ trash <skill-path>
 - 扫描时自动跳过 `openclaw-skill-auditor` 本身。
 - scan.py 会跳过 markdown 文件中的代码块内容，以减少文档示例触发的误报。
 - 若 `scan.py` 执行失败，直接报告错误命令和原因。
-- **禁止在报告中加入"判断"、"这属于正常行为"、"可以忽略"之类的文字。扫到什么列什么，主人决定要不要删。**
+- **禁止在报告中加入"判断"、"这属于正常行为"、"可以忽略"、"简要说明"之类的文字。扫到什么列什么，判断权在主人。**
