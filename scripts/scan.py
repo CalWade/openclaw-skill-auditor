@@ -4,9 +4,9 @@ OpenClaw Skill Auditor - Static scanner
 Scans installed OpenClaw skills for security, token bloat, and hidden cost risks.
 
 Priority-based scanning:
-  Tier 1 — always fully scanned: SKILL.md, scripts/, every file <= 64 KB in the skill root
-  Tier 2 — scanned until budget exhausted: remaining subdirs, depth <= 6, files <= 256 KB
-  Skipped always: SKIP_DIRS, binary extensions, files > 256 KB
+  Tier 1 — always fully scanned: SKILL.md, scripts/, root-level files <= 64 KB
+  Tier 2 — scanned until budget: remaining subdirs, depth <= 6, files <= 256 KB
+  Markdown code fences stripped before scanning to suppress doc false positives.
 
 Usage:
     python3 scan.py [--out /tmp/openclaw-audit.json] [--extra-root /path/to/skills]
@@ -21,15 +21,11 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Limits
-# ---------------------------------------------------------------------------
-
-TIER1_MAX_BYTES   = 64  * 1024   # Tier 1 files: full scan up to 64 KB
-TIER2_MAX_BYTES   = 256 * 1024   # Tier 2 files: skip if larger than 256 KB
-TIER2_FILE_BUDGET = 120          # max additional files scanned from Tier 2
-MAX_LINES_READ    = 5000         # max lines read from any single file
-MAX_SCAN_DEPTH    = 6            # max recursion depth for Tier 2
+TIER1_MAX_BYTES   = 64  * 1024
+TIER2_MAX_BYTES   = 256 * 1024
+TIER2_FILE_BUDGET = 120
+MAX_LINES_READ    = 5000
+MAX_SCAN_DEPTH    = 6
 
 SKIP_DIRS = {
     "node_modules", ".git", "__pycache__", ".venv", "venv",
@@ -50,26 +46,19 @@ TEXT_EXTENSIONS = {
     ".mjs", ".cjs", ".jsx", ".tsx",
 }
 
-# ---------------------------------------------------------------------------
-# Data model
-# ---------------------------------------------------------------------------
 
 @dataclass
 class Flag:
-    dimension: str   # security | token_bloat | hidden_cost
-    severity: str    # critical | high | medium | low
+    dimension: str
+    severity: str
     rule: str
     detail: str
-    file: str        # relative path within skill dir
-    line: int = 0    # first line where rule matched (0 = file-level)
-    count: int = 1   # total number of matches in this file
+    file: str
+    line: int = 0
+    count: int = 1
 
-# ---------------------------------------------------------------------------
-# Rules
-# ---------------------------------------------------------------------------
 
 CONTENT_RULES = [
-    # Security
     (
         "sec-eval", "security", "critical",
         re.compile(r"\beval\s*\(", re.IGNORECASE),
@@ -129,7 +118,6 @@ CONTENT_RULES = [
         ),
         "SKILL.md 中检测到不可见字符、同形字或越狱指令，疑似 Prompt 注入攻击。",
     ),
-    # Token Bloat
     (
         "tok-agents-embed", "token_bloat", "medium",
         re.compile(r"\b(AGENTS\.md|CLAUDE\.md|MEMORY\.md)\b", re.IGNORECASE),
@@ -143,7 +131,6 @@ CONTENT_RULES = [
         ),
         "触发词过于宽泛，可能导致 skill 被不必要地频繁激活。",
     ),
-    # Hidden Cost
     (
         "hid-heartbeat-abuse", "hidden_cost", "high",
         re.compile(
@@ -181,9 +168,6 @@ CONTENT_RULES = [
 DUPLICATE_WINDOW    = 5
 DUPLICATE_THRESHOLD = 3
 
-# ---------------------------------------------------------------------------
-# File collection: priority tiers
-# ---------------------------------------------------------------------------
 
 def _is_text(path: Path) -> bool:
     return path.suffix.lower() in TEXT_EXTENSIONS or path.suffix == ""
@@ -194,18 +178,10 @@ def _skip(path: Path) -> bool:
 
 
 def collect_tier1(skill_path: Path) -> list:
-    """
-    Tier 1: always fully scanned.
-      - SKILL.md (no size gate — primary attack surface)
-      - everything inside scripts/ recursively, up to TIER1_MAX_BYTES
-      - text files directly in the skill root, up to TIER1_MAX_BYTES
-    """
     files = []
-
     skill_md = skill_path / "SKILL.md"
     if skill_md.exists() and skill_md.is_file():
         files.append(skill_md)
-
     scripts_dir = skill_path / "scripts"
     if scripts_dir.exists():
         for f in sorted(scripts_dir.rglob("*")):
@@ -215,7 +191,6 @@ def collect_tier1(skill_path: Path) -> list:
                         files.append(f)
                 except OSError:
                     pass
-
     for f in sorted(skill_path.iterdir()):
         if f.is_file() and _is_text(f) and not _skip(f) and f != skill_md:
             try:
@@ -223,7 +198,6 @@ def collect_tier1(skill_path: Path) -> list:
                     files.append(f)
             except OSError:
                 pass
-
     seen = set()
     result = []
     for f in files:
@@ -234,10 +208,6 @@ def collect_tier1(skill_path: Path) -> list:
 
 
 def collect_tier2(skill_path: Path, already_scanned: set) -> list:
-    """
-    Tier 2: remaining subdirectories, bounded by TIER2_FILE_BUDGET and MAX_SCAN_DEPTH.
-    Prioritises shallow, small files — most likely to contain relevant code.
-    """
     candidates = []
 
     def _walk(directory: Path, depth: int):
@@ -255,9 +225,7 @@ def collect_tier2(skill_path: Path, already_scanned: set) -> list:
                     continue
                 _walk(entry, depth + 1)
             elif entry.is_file():
-                if entry in already_scanned:
-                    continue
-                if _skip(entry) or not _is_text(entry):
+                if entry in already_scanned or _skip(entry) or not _is_text(entry):
                     continue
                 try:
                     size = entry.stat().st_size
@@ -271,35 +239,47 @@ def collect_tier2(skill_path: Path, already_scanned: set) -> list:
     candidates.sort(key=lambda x: (x[0], x[1]))
     return [f for _, _, f in candidates[:TIER2_FILE_BUDGET]]
 
-# ---------------------------------------------------------------------------
-# Scan a single file — reports count of matches per rule, not just first hit
-# ---------------------------------------------------------------------------
+
+def strip_markdown_fences(lines: list) -> list:
+    """
+    Replace lines inside ``` fences with empty strings.
+    Prevents doc examples from triggering rules.
+    Line numbers are preserved so positions remain accurate.
+    """
+    result = []
+    in_fence = False
+    for line in lines:
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+            result.append("")
+        elif in_fence:
+            result.append("")
+        else:
+            result.append(line)
+    return result
+
 
 def scan_file(fpath: Path, skill_path: Path) -> list:
     try:
         text = fpath.read_text(errors="replace")
     except OSError:
         return []
-
     lines = text.splitlines()[:MAX_LINES_READ]
+    if fpath.suffix.lower() == ".md":
+        lines = strip_markdown_fences(lines)
     rel = str(fpath.relative_to(skill_path))
-
-    hits: dict = {}  # rule_id -> [first_lineno, count, dimension, severity, detail]
+    hits = {}
     for lineno, line in enumerate(lines, 1):
         for rule_id, dimension, severity, pattern, detail in CONTENT_RULES:
             if pattern.search(line):
                 if rule_id not in hits:
                     hits[rule_id] = [lineno, 0, dimension, severity, detail]
                 hits[rule_id][1] += 1
-
     return [
         Flag(dimension, severity, rule_id, detail, rel, line=first_line, count=count)
         for rule_id, (first_line, count, dimension, severity, detail) in hits.items()
     ]
 
-# ---------------------------------------------------------------------------
-# Structural checkers
-# ---------------------------------------------------------------------------
 
 def check_skill_size(skill_path: Path):
     md = skill_path / "SKILL.md"
@@ -310,11 +290,8 @@ def check_skill_size(skill_path: Path):
     except OSError:
         return None
     if n > 500:
-        return Flag(
-            "token_bloat", "medium", "tok-skill-size",
-            f"SKILL.md 共 {n} 行（超过 500 行），建议将内容移至 references/ 目录。",
-            "SKILL.md",
-        )
+        return Flag("token_bloat", "medium", "tok-skill-size",
+            f"SKILL.md 共 {n} 行（超过 500 行），建议将内容移至 references/ 目录。", "SKILL.md")
     return None
 
 
@@ -337,11 +314,9 @@ def check_ref_size(skill_path: Path) -> list:
         except OSError:
             continue
         if n > 300:
-            flags.append(Flag(
-                "token_bloat", "low", "tok-ref-size",
+            flags.append(Flag("token_bloat", "low", "tok-ref-size",
                 f"references 文件共 {n} 行（超过 300 行），建议拆分或精简。",
-                str(f.relative_to(skill_path)),
-            ))
+                str(f.relative_to(skill_path))))
     return flags
 
 
@@ -360,11 +335,9 @@ def check_duplicate_blocks(skill_path: Path):
             counts[block] += 1
     repeated = [b for b, c in counts.items() if c >= DUPLICATE_THRESHOLD]
     if repeated:
-        return Flag(
-            "token_bloat", "medium", "tok-duplicate-rules",
+        return Flag("token_bloat", "medium", "tok-duplicate-rules",
             f"SKILL.md 中有 {len(repeated)} 个指令块重复出现 ≥{DUPLICATE_THRESHOLD} 次，存在冗余。",
-            "SKILL.md",
-        )
+            "SKILL.md")
     return None
 
 
@@ -379,31 +352,23 @@ def check_mcp_tools(skill_path: Path):
             data = json.loads(fpath.read_text())
             tools = data.get("tools", [])
             if len(tools) > 10:
-                return Flag(
-                    "hidden_cost", "medium", "hid-tool-spam",
+                return Flag("hidden_cost", "medium", "hid-tool-spam",
                     f"{fname} 注册了 {len(tools)} 个工具（超过 10 个），会使每次 tool-call 的上下文膨胀。",
-                    fname,
-                )
+                    fname)
         except (OSError, json.JSONDecodeError, KeyError):
             pass
     return None
 
-# ---------------------------------------------------------------------------
-# Per-skill audit
-# ---------------------------------------------------------------------------
 
 def audit_skill(skill_path: Path) -> dict:
     flags = []
-
     tier1_files = collect_tier1(skill_path)
     tier1_set = set(tier1_files)
     for fpath in tier1_files:
         flags.extend(scan_file(fpath, skill_path))
-
     tier2_files = collect_tier2(skill_path, tier1_set)
     for fpath in tier2_files:
         flags.extend(scan_file(fpath, skill_path))
-
     f = check_skill_size(skill_path)
     if f:
         flags.append(f)
@@ -414,7 +379,6 @@ def audit_skill(skill_path: Path) -> dict:
     f = check_mcp_tools(skill_path)
     if f:
         flags.append(f)
-
     return {
         "skill": skill_path.name,
         "path": str(skill_path),
@@ -425,14 +389,10 @@ def audit_skill(skill_path: Path) -> dict:
         "flags": [asdict(f) for f in flags],
     }
 
-# ---------------------------------------------------------------------------
-# Path resolution
-# ---------------------------------------------------------------------------
 
 def resolve_skill_roots(extra=None) -> list:
     home = Path.home()
     candidates = []
-
     workspace = home / ".openclaw" / "workspace"
     config_file = home / ".openclaw" / "openclaw.json"
     if config_file.exists():
@@ -446,11 +406,9 @@ def resolve_skill_roots(extra=None) -> list:
     candidates.append(workspace / "skills")
     candidates.append(home / ".openclaw" / "skills")
     candidates.append(home / ".agents" / "skills")
-
     if extra:
         for p in extra:
             candidates.append(Path(p).expanduser())
-
     seen = set()
     roots = []
     for p in candidates:
@@ -461,12 +419,8 @@ def resolve_skill_roots(extra=None) -> list:
         if resolved not in seen and p.exists():
             seen.add(resolved)
             roots.append(p)
-
     return roots
 
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
 
 def run(roots, out: Path) -> int:
     if not roots:
@@ -474,7 +428,6 @@ def run(roots, out: Path) -> int:
         print("已查找: ~/.openclaw/workspace/skills, ~/.openclaw/skills, ~/.agents/skills",
               file=sys.stderr)
         return 1
-
     seen_names: set = set()
     skill_dirs = []
     for root in roots:
@@ -490,20 +443,16 @@ def run(roots, out: Path) -> int:
             if d.name not in seen_names:
                 seen_names.add(d.name)
                 skill_dirs.append((d, str(root)))
-
     print(f"扫描 {len(skill_dirs)} 个 skill，覆盖 {len(roots)} 个路径：")
     for root in roots:
         print(f"  {root}")
-
     results = []
     for skill_dir, source in skill_dirs:
         result = audit_skill(skill_dir)
         result["source_root"] = source
         results.append(result)
-
     flagged = [r for r in results if r["has_risk"]]
     clean   = [r for r in results if not r["has_risk"]]
-
     report = {
         "scanned_at":    datetime.now().isoformat(timespec="seconds"),
         "roots":         [str(r) for r in roots],
@@ -513,29 +462,18 @@ def run(roots, out: Path) -> int:
         "flagged":       flagged,
         "clean":         [r["skill"] for r in clean],
     }
-
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, ensure_ascii=False))
-    print(f"完成。{len(flagged)} 个 skill 有风险项，{len(clean)} 个无风险。报告: {out}")
+    print(f"完成。{len(flagged)} 个 skill 有命中项，{len(clean)} 个无命中。报告: {out}")
     return 0
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="OpenClaw Skill Auditor")
-    parser.add_argument(
-        "--extra-root",
-        action="append",
-        metavar="DIR",
-        help="额外扫描路径（可重复使用）。标准路径始终自动扫描。",
-    )
-    parser.add_argument(
-        "--out",
-        default="/tmp/openclaw-audit.json",
-        help="JSON 报告输出路径（默认: /tmp/openclaw-audit.json）",
-    )
+    parser.add_argument("--extra-root", action="append", metavar="DIR",
+        help="额外扫描路径（可重复使用）。标准路径始终自动扫描。")
+    parser.add_argument("--out", default="/tmp/openclaw-audit.json",
+        help="JSON 报告输出路径（默认: /tmp/openclaw-audit.json）")
     args = parser.parse_args()
     roots = resolve_skill_roots(args.extra_root)
     sys.exit(run(roots, Path(args.out).expanduser()))
